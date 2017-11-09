@@ -81,6 +81,7 @@ FORMS    += mainwindow.ui \
     generateid.ui \
     checkispd.ui \
     #uploaddb.ui
+    checkispd.ui
 
 RESOURCES += \
     resource.qrc

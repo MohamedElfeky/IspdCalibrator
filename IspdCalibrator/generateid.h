@@ -3,6 +3,10 @@
 
 #include <QDialog>
 #include <QSerialPort>
+#include <QTimer>
+#include <QSettings>
+#include <QDir>
+#include <QTextCodec>
 
 namespace Ui {
 class GenerateID;
@@ -15,6 +19,7 @@ class GenerateID : public QDialog
 public:
     explicit GenerateID(QWidget *parent = 0);
     ~GenerateID();
+    void timerEvent(QTimerEvent *ev);
 
 protected:
     void closeEvent(QCloseEvent * event) override;
@@ -55,6 +60,8 @@ private:
     bool m_is_write_id;
     bool m_is_write_hz;
 
+    //超时处理
+    int m_timeout;
 };
 
 #endif // GENERATEID_H

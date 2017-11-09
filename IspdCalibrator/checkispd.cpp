@@ -14,6 +14,16 @@
 #include <QTime>
 #include <QMessageBox>
 
+#define MESSAGE_RED "<font size = 200 color = red ><strong>"
+#define MESSAGE_GREEN "<font size = 200 color = blue ><strong>"
+#define MESSAGE_END "</strong></font>"
+
+//全局变量定义--超时计数器
+static int time_count = 0;
+
+//全局变量定义--判断超级板是否有问题的计数器
+static int ispd_isbad_count = 0;
+
 CheckIspd::CheckIspd(QWidget *parent) :
     m_status_open(false),
     QDialog(parent),
@@ -30,6 +40,7 @@ CheckIspd::CheckIspd(QWidget *parent) :
     ui->pushButton_ispd_hr->setDisabled(true);     //心率按钮
     ui->pushButton_ispd_sensor->setDisabled(true); //获取传感器按钮
     ui->pushButton_ispd_cmp->setDisabled(true);    //比较数据按钮
+    m_is_write_id = false;
 
     ui->pushButton->setEnabled(false);
     this->ui->label_status->clear();
@@ -147,6 +158,12 @@ void CheckIspd::onMrUdpMessage(const QByteArray &msg)
     }
 }
 
+void CheckIspd::onUsername(const QString &username)
+{
+    qDebug() << "username = " << username;
+    m_username = username;
+}
+
 void CheckIspd::onUdpData(QString udp_data)
 {
     //ui->textEdit_log->append(udp_data);
@@ -184,14 +201,51 @@ void CheckIspd::start()
     this->showMaximized();
 }
 
+void CheckIspd::timerEvent(QTimerEvent *ev)
+{
+    if(ev->timerId() == m_timeout)
+    {
+        time_count++;
+        if(time_count == 10)
+        {
+           time_count = 0;
+           ispd_isbad_count++;
+           QString timeout_info = QString::fromLocal8Bit("收发数据超时，请重试...");
+           QString str1 = MESSAGE_RED + timeout_info + MESSAGE_END;
+           QMessageBox::information(this,QString::fromLocal8Bit("信息"), str1);
+           if(ispd_isbad_count == 3)
+           {
+               ispd_isbad_count = 0;
+               QString bad_info = QString::fromLocal8Bit("你测试的超级板通信存在问题，请换个ID号重新录入或者返工重做...");
+               QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+               QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
+           }
+           killTimer(m_timeout);
+        }
+        QString info = QString::fromLocal8Bit("请等待") + QString::number(time_count)+QString::fromLocal8Bit("数据收发中...");
+        ui->label_timeout->setText(info);
+    }
+}
+
 //从串口中读取所有数据的函数
 void CheckIspd::onSerialPortRead()
 {
     m_spt.waitForReadyRead(100);
     QByteArray buf = m_spt.readAll();
-    if (buf.length() < 5) return ;
-    qDebug() << "size = " << buf.size();
-    qDebug() << "% recv buf = " << buf;
+    if (buf.length() < 5)
+    {
+        QString rw_info = QString::fromLocal8Bit("读取超级发过来的数据失败，请重试...");
+        QString rw_str = MESSAGE_RED + rw_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), rw_str);
+        return ;
+    }
+
+    //超时处理
+    time_count = 0;
+    killTimer(m_timeout);
+
+    qDebug() << QString::fromLocal8Bit("护腿板发过来的数据长度size =") << buf.size();
+    qDebug() << QString::fromLocal8Bit("护腿板发过来的数据recv buf = ") << buf;
 
     serialPort::REP_TYPE type = static_cast<serialPort::REP_TYPE>(buf.at(2));
     QString errstring;
@@ -230,6 +284,15 @@ void CheckIspd::onSerialPortRead()
                 errstring =  QString::fromLocal8Bit("配置成功");
                 qDebug() << errstring;
                 ui->label_status->setText(errstring);
+
+
+                if (m_is_write_id)
+                {
+                    ui->label_status->setText(QString::fromLocal8Bit("超级板ID录入成功！"));
+                    m_is_write_id = false;
+                    break ;
+                }
+
 
                 if (!ui->pushButton_customize->isEnabled())
                 {
@@ -624,6 +687,7 @@ void CheckIspd::on_pushButton_customize_clicked()
          ui->label_status->setText(QString::fromLocal8Bit("串口没有打开"));
          return ;
     }
+    m_timeout = startTimer(1000);
     QByteArray pre_array;
     quint8 pre_write = 0xFF;
     quint8 cnt = 15;
@@ -635,13 +699,21 @@ void CheckIspd::on_pushButton_customize_clicked()
     qint64 cus_w = m_spt.write(pre_array, pre_array.length());
     if(cus_w == -1)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送预配置指令失败，请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送预配置指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     bool cus_ok = m_spt.waitForBytesWritten(10);
     if(cus_ok == false)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送预配置指令超时，请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送预配置指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     serialPort::ReqPkg cus_pkg(serialPort::REQ_TYPE::ISPD_MODULE_CUSTOMISE);
@@ -649,13 +721,21 @@ void CheckIspd::on_pushButton_customize_clicked()
     qint64 cus_one_w = m_spt.write(send_cus_pkg.data(), send_cus_pkg.length());
     if(cus_one_w == -1)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送开始配置指令失败，请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送开始配置指令失败，请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     bool cus_one_ok = m_spt.waitForBytesWritten(10);
     if(cus_one_ok == false)
-    {
-        ui->label_status->setText(QString::fromLocal8Bit("发送开始配置指令超时，请重试..."));
+    {        
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送开始配置指令失败，请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     ui->pushButton_customize->setDisabled(true);
@@ -672,19 +752,27 @@ void CheckIspd::on_pushButton_applicate_clicked()
          ui->label_status->setText(QString::fromLocal8Bit("串口没有打开"));
          return ;
     }
-
+    m_timeout = startTimer(1000);
     serialPort::ReqPkg app_pkg(serialPort::REQ_TYPE::ISPD_MODULE_APPLICATE);
     QByteArray send_cus_app = app_pkg.toBinary();
     qint64 app_w = m_spt.write(send_cus_app.data(), send_cus_app.length());
     if(app_w == -1)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送结束配置指令失败，请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送结束配置指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     bool app_ok = m_spt.waitForBytesWritten(10);
     if(app_ok == false)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送结束配置指令超时，请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送结束配置指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     ui->pushButton_applicate->setEnabled(false);
@@ -769,20 +857,28 @@ void CheckIspd::on_pushButton_ispd_no_clicked()
         ui->label_status->setText(QString::fromLocal8Bit("串口没有打开"));
         return ;
     }
-
+    m_timeout = startTimer(1000); //超时处里
     serialPort::ReqPkg cus_pkg(serialPort::REQ_TYPE::ISPD_RD_ID);
     QByteArray send_cus_pkg = cus_pkg.toBinary();
     qint64 ispd_w = m_spt.write(send_cus_pkg.data(), send_cus_pkg.length());
     if(ispd_w == -1)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("获取标签指令发送失败,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("获取标签指令发送失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
 
     bool ispd_ok = m_spt.waitForBytesWritten(10);
     if(ispd_ok == false)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("获取标签指令发送超时,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("获取标签指令发送失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     ui->lineEdit_ispd_no->clear();
@@ -798,18 +894,27 @@ void CheckIspd::on_pushButton_ispd_version_clicked()
          ui->label_status->setText(QString::fromLocal8Bit("串口没有打开"));
          return ;
     }
+    m_timeout = startTimer(1000); //超时处里
     serialPort::ReqPkg cus_pkg(serialPort::REQ_TYPE::ISPD_RD_VERSION);
     QByteArray send_cus_pkg = cus_pkg.toBinary();
     qint64 ispd_v_w = m_spt.write(send_cus_pkg.data(), send_cus_pkg.length());
     if(ispd_v_w == -1)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送获取版本号指令失败,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送获取版本号指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     bool ispd_v_ok = m_spt.waitForBytesWritten(10);
     if(ispd_v_ok == false)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送获取版本号指令超时,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送获取版本号指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     ui->lineEdit_ispd_version->clear();
@@ -825,18 +930,27 @@ void CheckIspd::on_pushButton_ispd_hz_clicked()
          ui->label_status->setText(QString::fromLocal8Bit("串口没有打开"));
          return ;
     }
+    m_timeout = startTimer(1000); //超时处里
     serialPort::ReqPkg cus_pkg(serialPort::REQ_TYPE::ISPD_RD_HZ);
     QByteArray send_cus_pkg = cus_pkg.toBinary();
     qint64 ispd_hz_w = m_spt.write(send_cus_pkg.data(), send_cus_pkg.length());
     if(ispd_hz_w == -1)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送获取采样率指令错误,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送获取采样率指令错误,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     bool ispd_hz_ok = m_spt.waitForBytesWritten(10);
     if(ispd_hz_ok == false)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送获取采样率指令超时,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送获取采样率指令错误,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     ui->lineEdit_ispd_hz->clear();
@@ -852,19 +966,27 @@ void CheckIspd::on_pushButton_ispd_hr_clicked()
         ui->label_status->setText(QString::fromLocal8Bit("串口没有打开"));
         return ;
     }
-
+    m_timeout = startTimer(1000); //超时处里
     serialPort::ReqPkg cus_pkg(serialPort::REQ_TYPE::ISPD_RD_HR);
     QByteArray send_cus_pkg = cus_pkg.toBinary();
     qint64 ispd_hr_w = m_spt.write(send_cus_pkg.data(), send_cus_pkg.length());
     if(ispd_hr_w == -1)
-    {
-        ui->label_status->setText(QString::fromLocal8Bit("发送读取心率指令失败,请重试..."));
+    {    
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送读取心率指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     bool ispd_hr_ok = m_spt.waitForBytesWritten(10);
     if(ispd_hr_ok == false)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送读取心率指令超时,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送读取心率指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     ui->lineEdit_ispd_hr1->clear();
@@ -883,18 +1005,27 @@ void CheckIspd::on_pushButton_readAll_clicked()
         ui->label_status->setText(QString::fromLocal8Bit("串口没有打开"));
         return ;
     }
+    m_timeout = startTimer(1000); //超时处里
     serialPort::ReqPkg cus_pkg(serialPort::REQ_TYPE::ISPD_RD_ALL);
     QByteArray send_cus_pkg = cus_pkg.toBinary();
     qint64 read_all_w = m_spt.write(send_cus_pkg.data(), send_cus_pkg.length());
     if(read_all_w == -1)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("一键读取指令发送失败,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("一键读取指令发送失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     bool read_all_ok = m_spt.waitForBytesWritten(10);
     if(read_all_ok == false)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("一键读取指令发送超时,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("一键读取指令发送失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     ui->lineEdit_ispd_no->clear();
@@ -912,18 +1043,27 @@ void CheckIspd::on_pushButton_ispd_sensor_clicked()
          ui->label_status->setText(QString::fromLocal8Bit("串口没有打开"));
          return ;
     }
+    m_timeout = startTimer(1000); //超时处里
     serialPort::ReqPkg cus_pkg(serialPort::REQ_TYPE::ISPD_RD_SENSOR);
     QByteArray send_cus_pkg = cus_pkg.toBinary();
     qint64 ispd_sensor_w = m_spt.write(send_cus_pkg.data(), send_cus_pkg.length());
     if(ispd_sensor_w == -1)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送获取传感器和电量值指令失败,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送获取传感器和电量值指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     bool ispd_sensor_ok = m_spt.waitForBytesWritten(10);
     if(ispd_sensor_ok == false)
     {
-        ui->label_status->setText(QString::fromLocal8Bit("发送获取传感器和电量值指令超时,请重试..."));
+        time_count = 0;
+        killTimer(m_timeout);
+        QString bad_info = QString::fromLocal8Bit("发送获取传感器和电量值指令失败,请重试...");
+        QString bad_str = MESSAGE_RED + bad_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), bad_str);
         return ;
     }
     ui->lineEdit_acc_cmp->clear();
@@ -1016,8 +1156,10 @@ void CheckIspd::on_pushButton_init_clicked()
     QTime timer;
     QHash<uint32_t, QString>::const_iterator index;
     if(this->m_id_ip_map.isEmpty())
-    {
-        ui->label_status->setText(QString::fromLocal8Bit("没有获取到终端发过来的IP,初始化环境失败,请检查网络环境..."));
+    {        
+        QString net_error_info = QString::fromLocal8Bit("没有获取到终端发过来的IP,初始化环境失败,请检查网络环境...");
+        QString net_info = MESSAGE_RED + net_error_info + MESSAGE_END;
+        QMessageBox::information(this, QString::fromLocal8Bit("信息"), net_info);
         return ;
     }
     else
@@ -1028,7 +1170,9 @@ void CheckIspd::on_pushButton_init_clicked()
             bool bind_is_ok = udp_socket.bind(QHostAddress::Any, 8899, QUdpSocket::ShareAddress);
             if(bind_is_ok == false)
             {
-               ui->label_status->setText(QString::fromLocal8Bit("绑定UDP服务器失败,请检查网络..."));
+               QString net_error_info = QString::fromLocal8Bit("绑定UDP服务器失败,请检查网络...");
+               QString net_info = MESSAGE_RED + net_error_info + MESSAGE_END;
+               QMessageBox::information(this, QString::fromLocal8Bit("信息"), net_info);
                return ;
             }
 
@@ -1043,8 +1187,8 @@ void CheckIspd::on_pushButton_init_clicked()
                 if (timer.elapsed() > (TIMEOUT * 1000))
                 {
                     m_err_info = QString::fromLocal8Bit("接收终端数据超时，请重新初始化测试环境！");
-                    QString str1 = MESSAGE_RED + m_err_info + MESSAGE_END;
-                    QMessageBox::warning(this, QString::fromLocal8Bit("警告"), str1);
+                    QString err_info = MESSAGE_RED + m_err_info + MESSAGE_END;
+                    QMessageBox::warning(this, QString::fromLocal8Bit("警告"), err_info);
                     qDebug() << m_err_info;
                     ui->label_status->setText(m_err_info);
                     return ;
@@ -1100,8 +1244,8 @@ void CheckIspd::on_pushButton_init_clicked()
                 if (timer.elapsed() > (TIMEOUT * 1000))
                 {
                     m_err_info = QString::fromLocal8Bit("接收终端数据超时，请重新初始化测试环境！");
-                    QString str1 = MESSAGE_RED + m_err_info + MESSAGE_END;
-                    QMessageBox::warning(this, QString::fromLocal8Bit("警告"), str1);
+                    QString err_info = MESSAGE_RED + m_err_info + MESSAGE_END;
+                    QMessageBox::warning(this, QString::fromLocal8Bit("警告"), err_info);
                     qDebug() << m_err_info;
                     return ;
                 }
@@ -1148,7 +1292,10 @@ bool CheckIspd::mr_restart(const QString & ip)
     bool mr_is_bind_ok = udp_socket.bind(QHostAddress::Any, 8888, QUdpSocket::ShareAddress);
     if(mr_is_bind_ok == false)
     {
-       ui->label_status->setText(QString::fromLocal8Bit("绑定UDP服务器失败,请检查网络..."));
+       QString udp_err_info = QString::fromLocal8Bit("绑定UDP服务器失败,请检查网络...");
+       QString err_info = MESSAGE_RED + udp_err_info + MESSAGE_END;
+       QMessageBox::warning(this, QString::fromLocal8Bit("警告"), err_info);
+       qDebug() << udp_err_info;
        return false;
     }
 
@@ -1182,3 +1329,176 @@ void CheckIspd::on_textEdit_log_windowIconTextChanged(const QString &iconText)
     ui->textEdit_log->setTextCursor(cursor);
 }
 
+
+void CheckIspd::on_pushButton_record_clicked()
+{
+    std::string current_sign_id;
+    qint32 int_user_id;
+
+    ui->label_status->clear();
+    if (!m_spt.isOpen())
+    {
+         qWarning() << "serial port not open";
+         ui->label_status->setText(QString::fromLocal8Bit("串口没有打开"));
+         return ;
+    }
+    bool ok;
+
+
+    m_timeout = startTimer(1000);
+
+    current_sign_id = ui->lineEdit_ispd_id->text().toStdString();
+    if (this->ui->lineEdit_ispd_id->text() != NULL)
+    {
+        qint32 ispd_id_dencrypt = encrypt::dencrypt_ispd_id(current_sign_id);
+        serialPort::IspdID ispd_id(ispd_id_dencrypt, serialPort::REQ_TYPE::ISPD_WR_ID);
+        serialPort::ReqMsg<serialPort::IspdID> res_msg(ispd_id);
+        QByteArray send_id = res_msg.toBinary();
+
+        qint64 w_ret = m_spt.write(send_id.data(), send_id.length());
+        if(w_ret == -1)
+        {
+            time_count = 0;
+            killTimer(m_timeout);
+            QString timeout_info = QString::fromLocal8Bit("发送超级板ID录入指令失败,请重试...！");
+            QString str_info = MESSAGE_RED + timeout_info + MESSAGE_END;
+            QMessageBox::information(this,QString::fromLocal8Bit("信息"), str_info);
+            return ;
+        }
+
+        bool w_ok = m_spt.waitForBytesWritten(10);
+        if(w_ok == false)
+        {
+            time_count = 0;
+            killTimer(m_timeout);
+            QString timeout_info = QString::fromLocal8Bit("发送超级板ID录入指令失败,请重试...！");
+            QString str_info = MESSAGE_RED + timeout_info + MESSAGE_END;
+            QMessageBox::information(this,QString::fromLocal8Bit("信息"), str_info);
+            return ;
+        }
+        m_is_write_id = true;
+    }
+    else
+    {
+        time_count = 0;
+        killTimer(m_timeout);
+        QString err_info = QString::fromLocal8Bit("输入ID为空,请您务必输入ID...");
+        QString str_info = MESSAGE_RED + err_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), str_info);
+        qCritical() << err_info;
+        return ;
+    }
+
+    //write sign_id, ispd_id, date, type, color, size into database
+    util::data_base db;
+    QString err;
+    if (!db.init(err))
+    {
+        time_count = 0;
+        killTimer(m_timeout);
+        qCritical() << err;
+        return ;
+    }
+
+    QString sql = "select user_id from USER where user_name = \"" + m_username + "\"";
+    QVariant user_id;
+    if (!db.query(sql, user_id, err))
+    {
+        qCritical() << err;
+    }
+    int_user_id = user_id.toInt(&ok);
+    if (ok)
+    {
+        qInfo() << "find user_id from the database successfully";
+    }
+    else
+    {
+        time_count = 0;
+        killTimer(m_timeout);
+        QString err_info = QString::fromLocal8Bit("没有在数据库中找到用户信息...");
+        QString str_info = MESSAGE_RED + err_info + MESSAGE_END;
+        QMessageBox::information(this,QString::fromLocal8Bit("信息"), str_info);
+        qCritical() << err_info;
+        return ;
+    }
+
+    QString ispd_id = QString::fromStdString(current_sign_id);
+
+    QDate date(QDate::currentDate());
+    int this_year = date.year();
+    quint16 year = this_year - 2016;
+    quint16 week = date.weekNumber(&(this_year));
+    quint16 day  = date.dayOfWeek();
+    QString date_time = QString("%1").arg(year, 2, 10, QChar('0'))
+            + QString("%1").arg(week, 2, 10, QChar('0'))
+            + QString::number(day);
+
+    QString type;
+    if(this->ui->comboBox_type->currentText() != NULL)
+    {
+        type = this->ui->comboBox_type->currentText();
+    }
+
+    QString color;
+    if (ui->comboBox_color->currentText() == QString::fromLocal8Bit("黑红"))
+    {
+        color = tr("01");
+    }
+    else if(ui->comboBox_color->currentText() == QString::fromLocal8Bit("白红"))
+    {
+        color = tr("02");
+    }
+    else
+    {
+        QString color_err = QString::fromLocal8Bit("颜色不匹配");
+        qCritical() << color_err;
+    }
+
+    QString size;
+    if(this->ui->comboBox_size->currentText() == QString::fromLocal8Bit("大"))
+    {
+        size = tr("20");
+    }
+    else if(ui->comboBox_size->currentText() == QString::fromLocal8Bit("中"))
+    {
+        size = tr("10");
+    }
+    else if(this->ui->comboBox_size->currentText() == QString::fromLocal8Bit("小"))
+    {
+        size = tr("05");
+    }
+    else
+    {
+        QString color_err = QString::fromLocal8Bit("大小类型不匹配");
+        qCritical() << color_err;
+    }
+
+    QString sn = date_time + type + color + size + ispd_id;
+    qInfo() << "sn :"  << sn;
+
+    sql = "INSERT INTO ISPD (user_id, ispd_id, date, type, color, size, sn) VALUES ("
+            + QString::number(int_user_id) + ","
+            + "\"" + ispd_id + "\"" + ","
+            + "\"" + date_time + "\"" + ","
+            + "\"" + type + "\"" + ","
+            + "\"" + color + "\"" + ","
+            + "\"" + size + "\"" + ","
+            + "\"" + sn + "\""+ ")";
+    if (!db.update(sql, err))
+    {
+        time_count = 0;
+        killTimer(m_timeout);
+        QString error_msg = QString::fromLocal8Bit("数据库写入信息失败！");
+        QString str_info = MESSAGE_RED + error_msg + MESSAGE_END;
+        QMessageBox::warning(this, QString::fromLocal8Bit("警告"), str_info);
+        qCritical() << error_msg  << "{"<< err << "}";
+        return ;
+    }
+
+    if (err.isEmpty())
+    {
+        ui->label_status->setText(QString::fromLocal8Bit("数据库录入完毕！"));
+        ui->lineEdit_ispd_id->clear();
+    }
+
+}

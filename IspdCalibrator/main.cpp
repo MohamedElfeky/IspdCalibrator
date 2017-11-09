@@ -67,12 +67,13 @@ int main(int argc, char *argv[])
     }
     //qInstallMessageHandler(logMessageHandler);
     login l;
+    CheckIspd checkISPD;
     GenerateID genID;
     SelectView sv;
     QObject::connect(&l, SIGNAL(tellUsername(QString)), &genID, SLOT(onUsername(QString)));
+    QObject::connect(&l, SIGNAL(tellUsername(QString)), &checkISPD, SLOT(onUsername(QString)));
     if (l.exec() == QDialog::Accepted)
     {
-        CheckIspd checkISPD;
 
         QObject::connect(&sv, SIGNAL(test_ispd()), &checkISPD, SLOT(start()));
         QObject::connect(&checkISPD, SIGNAL(quit()), &sv, SLOT(close()));

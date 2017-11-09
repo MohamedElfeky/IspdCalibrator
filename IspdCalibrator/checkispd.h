@@ -33,6 +33,7 @@ class CheckIspd : public QDialog
 public:
     explicit CheckIspd(QWidget *parent = 0);
     ~CheckIspd();
+    void timerEvent(QTimerEvent *ev);
 
 protected:
     void closeEvent(QCloseEvent * event) override;
@@ -50,6 +51,7 @@ public slots:
     void onUdpDefaultMsg(QString def_log_str);
     void onUdpData(QString udp_data);
     bool mr_restart(const QString & ip);
+    void onUsername(const QString &username);
 
 private slots:
     void on_pushButton_open_sp_clicked();
@@ -70,6 +72,8 @@ private slots:
 
     void on_textEdit_log_windowIconTextChanged(const QString &iconText);
 
+    void on_pushButton_record_clicked();
+
 private:
     Ui::CheckIspd *ui;
 
@@ -86,6 +90,11 @@ private:
 
 
     tcp_worker  * m_tcp_worker_ptr;
+
+    //超时处理
+    int m_timeout;
+    bool m_is_write_id;
+    QString m_username;
 };
 
 #endif // CHECKISPD_H
